@@ -1,6 +1,6 @@
 # Lazer
 
-**TODO: Add description**
+Calculates the difference between two maps and returns a list of changes
 
 ## Installation
 
