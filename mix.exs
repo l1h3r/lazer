@@ -39,6 +39,7 @@ defmodule Lazer.MixProject do
 
   defp deps do
     [
+      {:benchfella, "~> 0.3.5", only: :dev},
       {:ex_doc, "~> 0.18.3", only: :dev},
       {:credo, "~> 0.9.0", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 0.5.1", only: [:dev, :test], runtime: false},

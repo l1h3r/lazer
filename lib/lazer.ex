@@ -18,102 +18,123 @@ defmodule Lazer do
       [%Lazer.Diff{kind: :D, lhs: 1, path: [:a]}]
 
       iex> Lazer.diff(%{}, %{a: 2})
-      [%Lazer.Diff{kind: :I, path: [:a], rhs: 2}]
+      [%Lazer.Diff{kind: :A, path: [:a], rhs: 2}]
 
       iex> Lazer.diff(%{a: 3}, %{a: 2})
-      [%Lazer.Diff{kind: :M, lhs: 3, path: [:a], rhs: 2}]
+      [%Lazer.Diff{kind: :E, lhs: 3, path: [:a], rhs: 2}]
 
       iex> Lazer.diff(%{a: 3}, %{a: %{}})
-      [%Lazer.Diff{kind: :M, lhs: 3, path: [:a], rhs: %{}}]
+      [%Lazer.Diff{kind: :E, lhs: 3, path: [:a], rhs: %{}}]
 
       iex> Lazer.diff(%{a: %{}}, %{a: %{b: 1}})
-      [%Lazer.Diff{kind: :I, path: [:a, :b], rhs: 1}]
+      [%Lazer.Diff{kind: :A, path: [:a, :b], rhs: 1}]
 
       iex> foo = %{a: 1, b: 2, c: %{d: 3, e: 4, f: 5}}
       iex> bar = %{a: 1, b: 42, c: %{d: %{something_else: "entirely"}, f: 10}}
       iex> Lazer.diff(foo, bar)
       [
-        %Lazer.Diff{kind: :M, lhs: 5, path: [:c, :f], rhs: 10},
+        %Lazer.Diff{kind: :E, lhs: 5, path: [:c, :f], rhs: 10},
         %Lazer.Diff{kind: :D, lhs: 4, path: [:c, :e]},
-        %Lazer.Diff{kind: :M, lhs: 3, path: [:c, :d], rhs: %{something_else: "entirely"}},
-        %Lazer.Diff{kind: :M, lhs: 2, path: [:b], rhs: 42}
+        %Lazer.Diff{kind: :E, lhs: 3, path: [:c, :d], rhs: %{something_else: "entirely"}},
+        %Lazer.Diff{kind: :E, lhs: 2, path: [:b], rhs: 42}
       ]
 
   ## Options
 
       iex> Lazer.diff(%{a: 1}, %{a: 1}, noops: true)
-      [%Lazer.Diff{kind: :Noop, lhs: %{a: 1}, rhs: %{a: 1}}]
+      [%Lazer.Diff{kind: :N, lhs: %{a: 1}, path: [], rhs: %{a: 1}}]
 
   """
   @spec diff(lhs :: any, rhs :: any, opts :: keyword) :: Diff.t() | [Diff.t()]
-  def diff(%{} = map1, %{} = map2, opts \\ []) do
-    map1
-    |> deep_diff(map2)
+  def diff(lhs, rhs, opts \\ []) do
+    lhs
+    |> do_diff(rhs, [])
     |> List.wrap()
     |> List.flatten()
-    |> filter_changes(opts)
+    |> format_changes(opts)
   end
 
-  defp deep_diff(_, _, _ \\ nil)
-  defp deep_diff(lhs, lhs, _), do: Diff.new(:Noop, nil, {lhs, lhs})
-
-  defp deep_diff(lhs, rhs, path) when is_list(lhs) and is_list(rhs),
-    do: do_diff(:list, {lhs, rhs, path})
-
-  defp deep_diff(%{} = lhs, %{} = rhs, path), do: do_diff(:map, {lhs, rhs, path})
-  defp deep_diff(lhs, rhs, path), do: do_diff(:default, {lhs, rhs, path})
-
-  @spec insert?(lhs :: any, rhs :: any) :: boolean
-  defp insert?(lhs, rhs), do: is_nil(lhs) and not is_nil(rhs)
-
-  @spec delete?(lhs :: any, rhs :: any) :: boolean
-  defp delete?(lhs, rhs), do: is_nil(rhs) and not is_nil(lhs)
-
-  @spec modify?(lhs :: any, rhs :: any) :: boolean
-  defp modify?(lhs, rhs), do: lhs !== rhs
-
-  @spec do_diff(type :: atom, subject :: subject) :: Diff.t() | [Diff.t()] | no_return
-  defp do_diff(:default, {lhs, rhs, path}) do
-    cond do
-      insert?(lhs, rhs) -> Diff.new(:I, path, {lhs, rhs})
-      delete?(lhs, rhs) -> Diff.new(:D, path, {lhs, rhs})
-      modify?(lhs, rhs) -> Diff.new(:M, path, {lhs, rhs})
-      true -> raise RuntimeError, "I don't know this ditty"
-    end
+  defp do_diff(lhs, lhs, path) do
+    Diff.new(:N, path, {lhs, lhs})
   end
 
-  defp do_diff(:map, {lhs, rhs, path}) do
-    lhs
-    |> Map.keys()
-    |> Enum.concat(Map.keys(rhs))
-    |> Enum.uniq()
-    |> Enum.reduce([], fn key, acc ->
-      collect_diff(
-        Map.get(lhs, key),
-        Map.get(rhs, key),
-        concat_path(path, key),
-        acc
-      )
-    end)
-  end
-
-  defp do_diff(:list, {lhs, rhs, path}) do
+  defp do_diff(lhs, rhs, path) when is_list(lhs) and is_list(rhs) do
     lhs
     |> Enum.count()
     |> max(Enum.count(rhs))
     |> Range.new(0)
-    |> Enum.reduce([], fn index, acc ->
-      collect_diff(
-        Enum.at(lhs, index),
-        Enum.at(rhs, index),
-        concat_path(path, index),
-        acc
-      )
+    |> reduce_diff({lhs, rhs, path})
+  end
+
+  defp do_diff(%{} = lhs, %{} = rhs, path) do
+    lhs
+    |> Map.keys()
+    |> Enum.concat(Map.keys(rhs))
+    |> Enum.uniq()
+    |> reduce_diff({lhs, rhs, path})
+  end
+
+  defp do_diff(lhs, rhs, path) when is_nil(lhs) and not is_nil(rhs) do
+    Diff.new(:A, path, {lhs, rhs})
+  end
+
+  defp do_diff(lhs, rhs, path) when is_nil(rhs) and not is_nil(lhs) do
+    Diff.new(:D, path, {lhs, rhs})
+  end
+
+  defp do_diff(lhs, rhs, path) when lhs !== rhs do
+    Diff.new(:E, path, {lhs, rhs})
+  end
+
+  @spec apply(target :: map | list, changes :: [Diff.t()]) :: map | list
+  def apply(target, changes) when is_list(changes) do
+    Enum.reduce(changes, target, &do_apply(&2, &1))
+  end
+
+  defp do_apply(target, %Diff{kind: :A, path: path, rhs: rhs}) do
+    put_in(target, accessor(path), rhs)
+  end
+
+  defp do_apply(target, %Diff{kind: :E, path: path, rhs: rhs}) do
+    update_in(target, accessor(path, :edit), fn _ -> rhs end)
+  end
+
+  defp do_apply(target, %Diff{kind: :D, path: path}) do
+    elem(pop_in(target, accessor(path, :remove)), 1)
+  end
+
+  defp do_apply(target, %Diff{kind: :N}), do: target
+
+  # def revert(target, changes) do
+  #   target
+  # end
+
+  def observe(lhs, rhs, fun) do
+    lhs
+    |> diff(rhs)
+    |> List.foldr([], fn diff, acc ->
+      case fun.(diff) do
+        :ok -> [diff | acc]
+        :skip -> acc
+      end
     end)
   end
 
-  @spec filter_changes(changes :: [Diff.t()], opts :: keyword) :: [Diff.t()]
-  defp filter_changes(changes, opts) do
+  defp reduce_diff(keys, {lhs, rhs, path}) do
+    Enum.reduce(keys, [], fn key, acc ->
+      diff =
+        do_diff(
+          get_in(lhs, accessor(key)),
+          get_in(rhs, accessor(key)),
+          Enum.concat(path, [key])
+        )
+
+      [diff | acc]
+    end)
+  end
+
+  @spec format_changes(changes :: [Diff.t()], opts :: keyword) :: [Diff.t()]
+  defp format_changes(changes, opts) do
     if Keyword.get(opts, :noops, false) do
       changes
     else
@@ -121,10 +142,44 @@ defmodule Lazer do
     end
   end
 
-  @spec collect_diff(lhs :: any, rhs :: any, path :: list, acc :: list) :: list
-  defp collect_diff(lhs, rhs, path, acc), do: [deep_diff(lhs, rhs, path) | acc]
+  defp accessor(path, type \\ :add) do
+    path
+    |> List.wrap()
+    |> Enum.map(fn key ->
+      fn
+        :get, %{} = data, next ->
+          next.(Map.get(data, key))
 
-  @spec concat_path(path :: list | nil, key :: any) :: [any]
-  defp concat_path(nil, key), do: List.wrap(key)
-  defp concat_path(path, key), do: Enum.concat(path, List.wrap(key))
+        :get, data, next when is_list(data) ->
+          next.(Enum.at(data, key))
+
+        :get_and_update, %{} = data, next ->
+          data
+          |> Map.get(key)
+          |> next.()
+          |> case do
+            {got, update} ->
+              {got, Map.put(data, key, update)}
+
+            :pop ->
+              {:pop, Map.delete(data, key)}
+          end
+
+        :get_and_update, data, next when is_list(data) ->
+          data
+          |> Enum.at(key)
+          |> next.()
+          |> case do
+            {got, update} when type === :add ->
+              {[got], List.insert_at(data, key, update)}
+
+            {got, update} when type === :edit ->
+              {[got], List.replace_at(data, key, update)}
+
+            :pop ->
+              {:pop, List.delete_at(data, key)}
+          end
+      end
+    end)
+  end
 end
